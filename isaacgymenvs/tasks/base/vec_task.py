@@ -56,6 +56,12 @@ def _create_sim_once(gym, *args, **kwargs):
         EXISTING_SIM = gym.create_sim(*args, **kwargs)
         return EXISTING_SIM
 
+def _destroy_sim_viewer(gym, sim, viewer):
+    global EXISTING_SIM
+    if EXISTING_SIM is not None:
+        gym.destroy_viewer(viewer)
+        gym.destroy_sim(sim)
+        EXISTING_SIM = None
 
 class Env(ABC):
     def __init__(self, config: Dict[str, Any], rl_device: str, sim_device: str, graphics_device_id: int, headless: bool):
@@ -221,6 +227,9 @@ class VecTask(Env):
         self.allocate_buffers()
 
         self.obs_dict = {}
+
+    def __del__(self):
+        _destroy_sim_viewer(self.gym, self.sim, self.viewer)
 
     def set_viewer(self):
         """Create the viewer."""
