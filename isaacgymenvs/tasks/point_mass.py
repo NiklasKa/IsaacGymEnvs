@@ -1,8 +1,9 @@
-import numpy as np
 import os
-import torch
 
-from isaacgym import gymutil, gymtorch, gymapi
+import numpy as np
+import torch
+from isaacgym import gymtorch, gymapi
+
 from .base.vec_task import VecTask
 
 
@@ -38,7 +39,6 @@ def print_asset_info(gym, asset, name):
 
 
 def print_actor_info(gym, env, actor_handle):
-
     name = gym.get_actor_name(env, actor_handle)
 
     body_names = gym.get_actor_rigid_body_names(env, actor_handle)
@@ -79,10 +79,10 @@ def print_actor_info(gym, env, actor_handle):
 
     # Print some state slices
     print("\nPoses from Body State:")
-    print(body_states['pose'])          # print just the poses
+    print(body_states['pose'])  # print just the poses
 
     print("\nVelocities from Body State:")
-    print(body_states['vel'])          # print just the velocities
+    print(body_states['vel'])  # print just the velocities
     print()
 
     # iterate through bodies and print name and position
@@ -104,6 +104,7 @@ def print_actor_info(gym, env, actor_handle):
     dof_positions = dof_states['pos']
     for i in range(len(dof_names)):
         print("DOF '%s' has position" % dof_names[i], dof_positions[i])
+
 
 def print_actuators(gym, env, actor_handle):
     print("\n===== Actuators =======================================")
@@ -128,7 +129,6 @@ def print_actuators(gym, env, actor_handle):
         print(f"\tkv {prop.kv}")
 
 
-
 class PointMass(VecTask):
 
     def __init__(self, cfg, rl_device, sim_device, graphics_device_id, headless, virtual_screen_capture, force_render):
@@ -139,7 +139,9 @@ class PointMass(VecTask):
         self.cfg["env"]["numObservations"] = 4
         self.cfg["env"]["numActions"] = 2
 
-        super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device, graphics_device_id=graphics_device_id, headless=headless, virtual_screen_capture=virtual_screen_capture, force_render=force_render)
+        super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device,
+                         graphics_device_id=graphics_device_id, headless=headless,
+                         virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
@@ -170,7 +172,18 @@ class PointMass(VecTask):
         asset_options = gymapi.AssetOptions()
         asset_options.fix_base_link = True
         pointmass_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
-        self.num_dof = self.gym.get_asset_dof_count(pointmass_asset)
+        self.num_dof = self.gym.get_asset_actuator_count(pointmass_asset)
+
+        # get motor efforts and control range
+        actuator_props = self.gym.get_asset_actuator_properties(pointmass_asset)
+        self._motor_effort = torch.Tensor([actuator_props[i].motor_effort for i in range(self.num_dof)]).float().to(
+            self.device)
+        self._ctrl_min = torch.Tensor(
+            [actuator_props[i].lower_control_limit if actuator_props[i].control_limited else -float('inf') for i in
+             range(self.num_dof)]).float().to(self.device)
+        self._ctrl_max = torch.Tensor(
+            [actuator_props[i].upper_control_limit if actuator_props[i].control_limited else float('inf') for i in
+             range(self.num_dof)]).float().to(self.device)
 
         # for debugging
         print_asset_info(self.gym, pointmass_asset, "Pointmass")
@@ -188,7 +201,6 @@ class PointMass(VecTask):
                 self.sim, lower, upper, num_per_row
             )
             pointmass_handle = self.gym.create_actor(env_ptr, pointmass_asset, pose, "pointmass", i, 1, 0)
-
 
             dof_props = self.gym.get_actor_dof_properties(env_ptr, pointmass_handle)
             dof_props['driveMode'][0] = gymapi.DOF_MODE_EFFORT
@@ -217,6 +229,8 @@ class PointMass(VecTask):
         if env_ids is None:
             env_ids = np.arange(self.num_envs)
 
+        # @TODO maybe clip velocities, when actor hits a wall
+
         self.gym.refresh_dof_state_tensor(self.sim)
 
         self.obs_buf[env_ids, 0] = self.dof_pos[env_ids, 0].squeeze()
@@ -230,7 +244,7 @@ class PointMass(VecTask):
         # positions = 0.1 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)  # +/-0.05
         positions = 0. * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)  # +/-0.05
         # velocities = 0.1 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5) # +/-0.05
-        velocities = 0. * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5) # +/-0.05
+        velocities = 0. * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)  # +/-0.05
 
         self.dof_pos[env_ids, :] = positions[:]
         self.dof_vel[env_ids, :] = velocities[:]
@@ -246,14 +260,15 @@ class PointMass(VecTask):
     def pre_physics_step(self, actions: torch.Tensor):
         actions_tensor = torch.zeros((self.num_envs, self.num_dof), device=self.device, dtype=torch.float)
 
-        # @TODO get motor limits and clip actions
-        # @TODO multiply actions by gear
+        # clip actions and apply motor effort
+        clamped_actions = torch.clamp(actions.to(self.device), min=self._ctrl_min, max=self._ctrl_max)
+        actions_tensor[::self.num_dof] = clamped_actions * self._motor_effort
+
         # @TODO get tendon factors and use coefficients to compute effort of each joint
 
-        actions_tensor[::self.num_dof] = actions.to(self.device) * 0.1
+        print(f"Forces {actions_tensor.cpu()}")
         forces = gymtorch.unwrap_tensor(actions_tensor)
         print("\n\n###### PRE PHYSICS STEP")
-        print(f"Forces {actions}")
         self.gym.set_dof_actuation_force_tensor(self.sim, forces)
 
     def post_physics_step(self):
@@ -273,6 +288,7 @@ class PointMass(VecTask):
             print(f"\tvel: {self.dof_vel[0, i].squeeze().cpu()}")
 
         self.compute_reward()
+
 
 #####################################################################
 ###=========================jit functions=========================###
