@@ -5,128 +5,7 @@ import torch
 from isaacgym import gymtorch, gymapi
 
 from .base.vec_task import VecTask
-
-
-def print_asset_info(gym, asset, name):
-    print("======== Asset info %s: ========" % (name))
-    num_bodies = gym.get_asset_rigid_body_count(asset)
-    num_joints = gym.get_asset_joint_count(asset)
-    num_dofs = gym.get_asset_dof_count(asset)
-    print("Got %d bodies, %d joints, and %d DOFs" %
-          (num_bodies, num_joints, num_dofs))
-
-    # Iterate through bodies
-    print("Bodies:")
-    for i in range(num_bodies):
-        name = gym.get_asset_rigid_body_name(asset, i)
-        print(" %2d: '%s'" % (i, name))
-
-    # Iterate through joints
-    print("Joints:")
-    for i in range(num_joints):
-        name = gym.get_asset_joint_name(asset, i)
-        type = gym.get_asset_joint_type(asset, i)
-        type_name = gym.get_joint_type_string(type)
-        print(" %2d: '%s' (%s)" % (i, name, type_name))
-
-    # iterate through degrees of freedom (DOFs)
-    print("DOFs:")
-    for i in range(num_dofs):
-        name = gym.get_asset_dof_name(asset, i)
-        type = gym.get_asset_dof_type(asset, i)
-        type_name = gym.get_dof_type_string(type)
-        print(" %2d: '%s' (%s)" % (i, name, type_name))
-
-
-def print_actor_info(gym, env, actor_handle):
-    name = gym.get_actor_name(env, actor_handle)
-
-    body_names = gym.get_actor_rigid_body_names(env, actor_handle)
-    body_dict = gym.get_actor_rigid_body_dict(env, actor_handle)
-
-    joint_names = gym.get_actor_joint_names(env, actor_handle)
-    joint_dict = gym.get_actor_joint_dict(env, actor_handle)
-
-    dof_names = gym.get_actor_dof_names(env, actor_handle)
-    dof_dict = gym.get_actor_dof_dict(env, actor_handle)
-    dof_props = gym.get_actor_dof_properties(env, actor_handle)
-
-    print()
-    print("===== Actor: %s =======================================" % name)
-
-    print("\nBodies")
-    print(body_names)
-    print(body_dict)
-
-    print("\nJoints")
-    print(joint_names)
-    print(joint_dict)
-
-    print("\nDegrees Of Freedom (DOFs)")
-    print(dof_names)
-    print(dof_dict)
-    print()
-
-    for i, name in enumerate(dof_names):
-        print(f"\nDOF {name} properties")
-        for k in ["hasLimits", "lower", "upper", "driveMode", "stiffness", "damping", "velocity", "effort", "friction",
-                  "armature"]:
-            print(f"\t{k}: {dof_props[k][i]}")
-
-    # Get body state information
-    body_states = gym.get_actor_rigid_body_states(
-        env, actor_handle, gymapi.STATE_ALL)
-
-    # Print some state slices
-    print("\nPoses from Body State:")
-    print(body_states['pose'])  # print just the poses
-
-    print("\nVelocities from Body State:")
-    print(body_states['vel'])  # print just the velocities
-    print()
-
-    # iterate through bodies and print name and position
-    body_positions = body_states['pose']['p']
-    for i in range(len(body_names)):
-        print("Body '%s' has position" % body_names[i], body_positions[i])
-
-    print("\nDOF states:")
-
-    # get DOF states
-    dof_states = gym.get_actor_dof_states(env, actor_handle, gymapi.STATE_ALL)
-
-    # print some state slices
-    # Print all states for each degree of freedom
-    print(dof_states)
-    print()
-
-    # iterate through DOFs and print name and position
-    dof_positions = dof_states['pos']
-    for i in range(len(dof_names)):
-        print("DOF '%s' has position" % dof_names[i], dof_positions[i])
-
-
-def print_actuators(gym, env, actor_handle):
-    print("\n===== Actuators =======================================")
-
-    # get all actuators
-    n_actuators = gym.get_actor_actuator_count(env, actor_handle)
-    props = gym.get_actor_actuator_properties(env, actor_handle)
-
-    for i in range(n_actuators):
-        name = gym.get_actor_actuator_name(env, actor_handle, i)
-        prop = props[i]
-
-        print(f"\nActor {name} properties")
-        print(f"\tcontrol_limited {prop.control_limited}")
-        print(f"\tlower_control_limit {prop.lower_control_limit}")
-        print(f"\tupper_control_limit {prop.upper_control_limit}")
-        print(f"\tforce_limited {prop.force_limited}")
-        print(f"\tlower_force_limit {prop.lower_force_limit}")
-        print(f"\tupper_force_limit {prop.upper_force_limit}")
-        print(f"\tmotor_effort {prop.motor_effort}")
-        print(f"\tkp {prop.kp}")
-        print(f"\tkv {prop.kv}")
+from ..utils.torch_jit_utils import *
 
 
 class PointMass(VecTask):
@@ -139,14 +18,19 @@ class PointMass(VecTask):
         self.cfg["env"]["numObservations"] = 4
         self.cfg["env"]["numActions"] = 2
 
+        self.targets = self.cfg["env"].get("targets", {})
+        self.targets = list(self.targets.values())
+
+        self.action_cost = self.cfg["env"].get("actionCost", 0.0)
+
         super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device,
                          graphics_device_id=graphics_device_id, headless=headless,
                          virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
-        self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
-        self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
+        self.dof_pos = self.dof_state.view(self.num_envs, self.num_actuators, 2)[..., 0]
+        self.dof_vel = self.dof_state.view(self.num_envs, self.num_actuators, 2)[..., 1]
 
     def create_sim(self):
         self.dt = self.sim_params.dt
@@ -172,21 +56,30 @@ class PointMass(VecTask):
         asset_options = gymapi.AssetOptions()
         asset_options.fix_base_link = True
         pointmass_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
-        self.num_dof = self.gym.get_asset_actuator_count(pointmass_asset)
+        self.num_actuators = self.gym.get_asset_actuator_count(pointmass_asset)
+        self.num_dof = self.gym.get_asset_dof_count(pointmass_asset)
 
         # get motor efforts and control range
         actuator_props = self.gym.get_asset_actuator_properties(pointmass_asset)
-        self._motor_effort = torch.Tensor([actuator_props[i].motor_effort for i in range(self.num_dof)]).float().to(
-            self.device)
-        self._ctrl_min = torch.Tensor(
-            [actuator_props[i].lower_control_limit if actuator_props[i].control_limited else -float('inf') for i in
-             range(self.num_dof)]).float().to(self.device)
-        self._ctrl_max = torch.Tensor(
-            [actuator_props[i].upper_control_limit if actuator_props[i].control_limited else float('inf') for i in
-             range(self.num_dof)]).float().to(self.device)
+        motor_efforts = [prop.motor_effort for prop in actuator_props]
+        self._motor_effort = to_torch(motor_efforts, device=self.device)
 
-        # for debugging
-        print_asset_info(self.gym, pointmass_asset, "Pointmass")
+        ctrl_min = [prop.lower_control_limit for prop in actuator_props]
+        self._ctrl_min = to_torch(ctrl_min, device=self.device)
+
+        ctrl_max = [prop.upper_control_limit for prop in actuator_props]
+        self._ctrl_max = to_torch(ctrl_max, device=self.device)
+
+        # get tendon to dof mapping
+        self._tendon_to_joint = torch.zeros((self.num_actuators, self.num_dof), device=self.device)
+
+        for i in range(self.gym.get_asset_tendon_count(pointmass_asset)):
+            joint_coefficients = self.gym.get_asset_fixed_tendon_joint_coefficients(pointmass_asset, i)
+            for j, coef in enumerate(joint_coefficients):
+                joint_name = self.gym.get_asset_fixed_tendon_joint_name(pointmass_asset, i, j)
+                joint_index = self.gym.find_asset_joint_index(pointmass_asset, joint_name)
+
+                self._tendon_to_joint[i, joint_index] = coef
 
         # asset is rotated z-up by default, no additional rotations needed
         pose = gymapi.Transform()
@@ -204,32 +97,22 @@ class PointMass(VecTask):
 
             dof_props = self.gym.get_actor_dof_properties(env_ptr, pointmass_handle)
             dof_props['driveMode'][0] = gymapi.DOF_MODE_EFFORT
-            dof_props['driveMode'][1] = gymapi.DOF_MODE_NONE
-            dof_props['stiffness'][:] = 0.0
-            dof_props['damping'][:] = 0.0
+            dof_props['driveMode'][1] = gymapi.DOF_MODE_EFFORT
             self.gym.set_actor_dof_properties(env_ptr, pointmass_handle, dof_props)
-
-            # for debugging
-            print_actor_info(self.gym, env_ptr, pointmass_handle)
-            print_actuators(self.gym, env_ptr, pointmass_handle)
 
             self.envs.append(env_ptr)
             self.pointmass_handles.append(pointmass_handle)
 
     def compute_reward(self):
         x_pos = self.obs_buf[:, 0]
-        x_vel = self.obs_buf[:, 1]
         y_pos = self.obs_buf[:, 2]
-        y_vel = self.obs_buf[:, 3]
 
-        self.rew_buf[:], self.reset_buf[:] = compute_pointmass_reward(x_pos, x_vel, y_pos, y_vel, self.reset_buf,
-                                                                      self.progress_buf, self.max_episode_length)
+        self.rew_buf[:], self.reset_buf[:] = compute_pointmass_reward(x_pos, y_pos, self.actions, self.reset_buf,
+                                                                      self.progress_buf, self.targets, self.action_cost, self.max_episode_length)
 
     def compute_observations(self, env_ids=None):
         if env_ids is None:
             env_ids = np.arange(self.num_envs)
-
-        # @TODO maybe clip velocities, when actor hits a wall
 
         self.gym.refresh_dof_state_tensor(self.sim)
 
@@ -241,10 +124,8 @@ class PointMass(VecTask):
         return self.obs_buf
 
     def reset_idx(self, env_ids):
-        # positions = 0.1 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)  # +/-0.05
-        positions = 0. * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)  # +/-0.05
-        # velocities = 0.1 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5) # +/-0.05
-        velocities = 0. * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)  # +/-0.05
+        positions = 0.1 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)  # +/-0.05
+        velocities = 0.1 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5) # +/-0.05
 
         self.dof_pos[env_ids, :] = positions[:]
         self.dof_vel[env_ids, :] = velocities[:]
@@ -258,23 +139,25 @@ class PointMass(VecTask):
         self.progress_buf[env_ids] = 0
 
     def pre_physics_step(self, actions: torch.Tensor):
-        actions_tensor = torch.zeros((self.num_envs, self.num_dof), device=self.device, dtype=torch.float)
-
-        # clip actions and apply motor effort
-        clamped_actions = torch.clamp(actions.to(self.device), min=self._ctrl_min, max=self._ctrl_max)
-        actions_tensor[::self.num_dof] = clamped_actions * self._motor_effort
-
-        # @TODO get tendon factors and use coefficients to compute effort of each joint
-
-        print(f"Forces {actions_tensor.cpu()}")
-        forces = gymtorch.unwrap_tensor(actions_tensor)
         print("\n\n###### PRE PHYSICS STEP")
-        self.gym.set_dof_actuation_force_tensor(self.sim, forces)
+        print(f"Actions {actions.cpu()}")
+        self.actions = actions.clone().to(self.device)
+
+        # clip actions, apply motor effort and map to tendons
+        clamped_actions = torch.clamp(self.actions.to(self.device), min=self._ctrl_min, max=self._ctrl_max)
+        forces = (clamped_actions * self._motor_effort) @ self._tendon_to_joint
+
+        # map tendon to joint
+        print(f"Forces {forces.cpu()}")
+        force_tensor = gymtorch.unwrap_tensor(forces)
+        self.gym.set_dof_actuation_force_tensor(self.sim, force_tensor)
 
     def post_physics_step(self):
         print("\n\n###### POST PHYSICS STEP")
 
         self.progress_buf += 1
+
+        print(f"progess: {self.progress_buf}")
 
         env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(env_ids) > 0:
@@ -282,12 +165,12 @@ class PointMass(VecTask):
 
         self.compute_observations()
 
-        for i in range(self.num_dof):
+        self.compute_reward()
+
+        for i in range(self.num_actuators):
             print(f"DOF {i}")
             print(f"\tpos: {self.dof_pos[0, i].squeeze().cpu()}")
             print(f"\tvel: {self.dof_vel[0, i].squeeze().cpu()}")
-
-        self.compute_reward()
 
 
 #####################################################################
@@ -295,13 +178,44 @@ class PointMass(VecTask):
 #####################################################################
 
 @torch.jit.script
-def compute_pointmass_reward(x_pos, x_vel, y_pos, y_vel, reset_buf, progress_buf, max_episode_length):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float) -> Tuple[Tensor, Tensor]
+def compute_pointmass_reward(x_pos, y_pos, actions, reset_buf, progress_buf, targets, action_cost_factor, max_episode_length):
+    # type: (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, list, float, float) -> Tuple[torch.Tensor, torch.Tensor]
 
-    # @TODO use correct reward function
-    reward = 1.0 - x_pos * x_pos - y_pos * y_pos
+
+    def _sigmoid(x, value_at_1, type='gaussian'):
+        if type == 'gaussian':
+            scale = torch.sqrt(-2. * torch.log(value_at_1))
+            return torch.exp(-0.5 * (x * scale) ** 2)
+
+        elif type == 'quadratic':
+            scale = torch.sqrt(1 - value_at_1)
+            scaled_x = x * scale
+            return torch.where(abs(scaled_x) < 1, 1 - scaled_x ** 2, 0.0)
+
+        else:
+            raise ValueError('Unknown sigmoid type {!r}.'.format(type))
+
+    # compute dist to all targets if specified
+    target_reward = 0.0
+    for target in targets:
+        target_size = target["size"]
+        lower_bound = 0.0
+        upper_bound = target_size
+
+        dist = torch.sqrt((x_pos - target["xpos"])**2 + (y_pos - target["ypos"])**2)
+
+        in_bounds = torch.logical_and(lower_bound <= dist, dist <= upper_bound)
+        d = torch.where(dist < lower_bound, lower_bound - dist, dist - upper_bound) / target_size
+        value = torch.where(in_bounds, 1.0, _sigmoid(d, 0.1))
+
+        target_reward += target["reward"] * value
+
+    action_cost = action_cost_factor * torch.sum(actions**2)
+
+    reward = target_reward - action_cost
 
     # adjust reward for reset agents
-    reset = progress_buf >= max_episode_length - 1
+    reset = torch.where(progress_buf >= (max_episode_length - 1), torch.ones_like(reset_buf), reset_buf)
 
     return reward, reset
+

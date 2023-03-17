@@ -36,8 +36,6 @@
         <geom name="pointmass" type="sphere" size=".01" material="self" mass=".3"/>
       </body>
     </body>
-
-    <geom name="target" pos="0 0 .01" material="target" type="sphere" size=".015"/>
   </worldbody>
 
   <tendon>
