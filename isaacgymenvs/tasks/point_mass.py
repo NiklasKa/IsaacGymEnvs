@@ -3,6 +3,7 @@ import os
 import numpy as np
 import torch
 from isaacgym import gymtorch, gymapi
+from typing import Tuple, List, Dict
 
 from .base.vec_task import VecTask
 from ..utils.torch_jit_utils import *
@@ -21,7 +22,7 @@ class PointMass(VecTask):
         self.targets = self.cfg["env"].get("targets", {})
         self.targets = list(self.targets.values())
 
-        self.action_cost = self.cfg["env"].get("actionCost", 0.0)
+        self.action_cost = self.cfg["env"].get("actionCost", 0.0) if self.cfg["env"].get("actionCost", 0.0) else 0.0
 
         super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device,
                          graphics_device_id=graphics_device_id, headless=headless,
@@ -139,8 +140,6 @@ class PointMass(VecTask):
         self.progress_buf[env_ids] = 0
 
     def pre_physics_step(self, actions: torch.Tensor):
-        print("\n\n###### PRE PHYSICS STEP")
-        print(f"Actions {actions.cpu()}")
         self.actions = actions.clone().to(self.device)
 
         # clip actions, apply motor effort and map to tendons
@@ -148,16 +147,11 @@ class PointMass(VecTask):
         forces = (clamped_actions * self._motor_effort) @ self._tendon_to_joint
 
         # map tendon to joint
-        print(f"Forces {forces.cpu()}")
         force_tensor = gymtorch.unwrap_tensor(forces)
         self.gym.set_dof_actuation_force_tensor(self.sim, force_tensor)
 
     def post_physics_step(self):
-        print("\n\n###### POST PHYSICS STEP")
-
         self.progress_buf += 1
-
-        print(f"progess: {self.progress_buf}")
 
         env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(env_ids) > 0:
@@ -167,51 +161,38 @@ class PointMass(VecTask):
 
         self.compute_reward()
 
-        for i in range(self.num_actuators):
-            print(f"DOF {i}")
-            print(f"\tpos: {self.dof_pos[0, i].squeeze().cpu()}")
-            print(f"\tvel: {self.dof_vel[0, i].squeeze().cpu()}")
-
 
 #####################################################################
 ###=========================jit functions=========================###
 #####################################################################
 
+
 @torch.jit.script
 def compute_pointmass_reward(x_pos, y_pos, actions, reset_buf, progress_buf, targets, action_cost_factor, max_episode_length):
-    # type: (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, list, float, float) -> Tuple[torch.Tensor, torch.Tensor]
-
-
-    def _sigmoid(x, value_at_1, type='gaussian'):
-        if type == 'gaussian':
-            scale = torch.sqrt(-2. * torch.log(value_at_1))
-            return torch.exp(-0.5 * (x * scale) ** 2)
-
-        elif type == 'quadratic':
-            scale = torch.sqrt(1 - value_at_1)
-            scaled_x = x * scale
-            return torch.where(abs(scaled_x) < 1, 1 - scaled_x ** 2, 0.0)
-
-        else:
-            raise ValueError('Unknown sigmoid type {!r}.'.format(type))
+    # type: (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[Dict[str, float]], float, float) -> Tuple[torch.Tensor, torch.Tensor]
 
     # compute dist to all targets if specified
-    target_reward = 0.0
+    target_reward = torch.zeros_like(reset_buf).float()
     for target in targets:
         target_size = target["size"]
         lower_bound = 0.0
         upper_bound = target_size
+        reward_margin = 0.1
 
         dist = torch.sqrt((x_pos - target["xpos"])**2 + (y_pos - target["ypos"])**2)
-
         in_bounds = torch.logical_and(lower_bound <= dist, dist <= upper_bound)
-        d = torch.where(dist < lower_bound, lower_bound - dist, dist - upper_bound) / target_size
-        value = torch.where(in_bounds, 1.0, _sigmoid(d, 0.1))
 
+        # compute sigmoid reward outside bounds
+        d = torch.where(dist < lower_bound, lower_bound - dist, dist - upper_bound) / target_size
+
+        scale = torch.sqrt(-2. * torch.log(reward_margin))
+        sigmoid_d =  torch.exp(-0.5 * (d * scale) ** 2)
+
+        value = torch.where(in_bounds, 1.0, sigmoid_d)
         target_reward += target["reward"] * value
 
-    action_cost = action_cost_factor * torch.sum(actions**2)
-
+    # compute action cost
+    action_cost = action_cost_factor * torch.sum(actions**2, dim=1)
     reward = target_reward - action_cost
 
     # adjust reward for reset agents
