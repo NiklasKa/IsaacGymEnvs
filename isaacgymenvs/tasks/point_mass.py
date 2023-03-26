@@ -125,8 +125,8 @@ class PointMass(VecTask):
         return self.obs_buf
 
     def reset_idx(self, env_ids):
-        positions = 0.1 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)  # +/-0.05
-        velocities = 0.1 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5) # +/-0.05
+        positions = 0.02 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)  # +/-0.01
+        velocities = 0.02 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5) # +/-0.01
 
         self.dof_pos[env_ids, :] = positions[:]
         self.dof_vel[env_ids, :] = velocities[:]
