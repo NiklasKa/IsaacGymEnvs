@@ -141,11 +141,12 @@ class PointMass(VecTask):
 
     def pre_physics_step(self, actions: torch.Tensor):
         # clip actions, apply motor effort and map to tendons
-        clamped_actions = torch.clamp(actions.clone().to(self.device), min=self._ctrl_min, max=self._ctrl_max)
-        self.actions = (clamped_actions * self._motor_effort) @ self._tendon_to_joint
+        self.actions = actions.clone().to(self.device)
+        clamped_actions = torch.clamp(self.actions, min=self._ctrl_min, max=self._ctrl_max)
+        forces = (clamped_actions * self._motor_effort) @ self._tendon_to_joint
 
         # map tendon to joint
-        force_tensor = gymtorch.unwrap_tensor(self.actions)
+        force_tensor = gymtorch.unwrap_tensor(forces)
         self.gym.set_dof_actuation_force_tensor(self.sim, force_tensor)
 
     def post_physics_step(self):
@@ -181,16 +182,16 @@ def compute_pointmass_reward(x_pos, y_pos, actions, reset_buf, progress_buf, tar
         in_bounds = torch.logical_and(lower_bound <= dist, dist <= upper_bound)
 
         # compute sigmoid reward outside bounds
-        d = torch.where(dist < lower_bound, lower_bound - dist, dist - upper_bound) / target_size
+        # d = torch.where(dist < lower_bound, lower_bound - dist, dist - upper_bound) / target_size
+        # scale = torch.sqrt(-2. * torch.log(reward_margin))
+        # sigmoid_d =  torch.exp(-0.5 * (d * scale) ** 2)
 
-        scale = torch.sqrt(-2. * torch.log(reward_margin))
-        sigmoid_d =  torch.exp(-0.5 * (d * scale) ** 2)
-
-        value = torch.where(in_bounds, 1.0, sigmoid_d)
+        # value = torch.where(in_bounds, 1.0, sigmoid_d)
+        value = torch.where(in_bounds, 1.0, 0.0)
         target_reward += target["reward"] * value
 
     # compute action cost
-    action_cost = action_cost_factor * torch.sum(actions**2, dim=1)
+    action_cost = action_cost_factor * torch.sum(actions**2, dim=1) / actions.shape[1]
     reward = target_reward - action_cost
 
     # adjust reward for reset agents
