@@ -141,12 +141,11 @@ class PointMass(VecTask):
 
     def pre_physics_step(self, actions: torch.Tensor):
         # clip actions, apply motor effort and map to tendons
-        self.actions = actions.clone().to(self.device)
-        clamped_actions = torch.clamp(self.actions, min=self._ctrl_min, max=self._ctrl_max)
-        forces = (clamped_actions * self._motor_effort) @ self._tendon_to_joint
+        clamped_actions = torch.clamp(actions.clone().to(self.device), min=self._ctrl_min, max=self._ctrl_max)
+        self.actions = (clamped_actions * self._motor_effort) @ self._tendon_to_joint
 
         # map tendon to joint
-        force_tensor = gymtorch.unwrap_tensor(forces)
+        force_tensor = gymtorch.unwrap_tensor(self.actions)
         self.gym.set_dof_actuation_force_tensor(self.sim, force_tensor)
 
     def post_physics_step(self):
