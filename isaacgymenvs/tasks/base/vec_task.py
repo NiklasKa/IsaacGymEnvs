@@ -423,9 +423,9 @@ class VecTask(Env):
 
             # check for keyboard events
             for evt in self.gym.query_viewer_action_events(self.viewer):
-                if evt.action == "QUIT" and evt.value > 0:
+                if evt.row_action == "QUIT" and evt.value > 0:
                     sys.exit()
-                elif evt.action == "toggle_viewer_sync" and evt.value > 0:
+                elif evt.row_action == "toggle_viewer_sync" and evt.value > 0:
                     self.enable_viewer_sync = not self.enable_viewer_sync
 
             # fetch results
